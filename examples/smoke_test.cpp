@@ -1,18 +1,80 @@
-#include <coasio/task.hpp>
 #include <iostream>
+#include <chrono>
 
-coasio::task<int> compute() {
-  co_yield 6;
-  co_return 42;
+#include <coasio/runtime.hpp>
+#include <coasio/task.hpp>
+#include <coasio/time.hpp>
+
+using namespace std::chrono_literals;
+
+coasio::task<void> basic_task(bool& ran) {
+  ran = true;
+  co_return;
 }
 
+coasio::task<void> delayed_task(bool& ran) {
+  co_await coasio::time::sleep(10ms);
+  ran = true;
+  co_return;
+}
 int main() {
-  try {
-    auto t = compute();
-    std::cout << "result: " << t.get() << "\n";
-    t.resume();
-    std::cout << "result: " << t.get() << "\n";
-  } catch (std::exception &e) {
-    std::cerr << e.what() << "\n";
+  coasio::runtime rt;
+  coasio::runtime::context_guard guard{&rt};
+
+  {
+    bool ran = false;
+
+    rt.spawn(basic_task(ran));
+    rt.block_on([]() -> coasio::task<void> {
+      co_await coasio::time::sleep(1s);
+      co_return;
+    }());
+
+    assert(ran);
+    std::cout << "[PASS] basic task\n";
+  }
+
+  {
+    bool ran = false;
+
+    auto start = std::chrono::steady_clock::now();
+
+    rt.spawn(delayed_task(ran));
+    rt.block_on([]() -> coasio::task<void> {
+      co_await coasio::time::sleep(1s);
+      co_return;
+    }());
+
+    auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start);
+
+    assert(ran);
+    assert(elapsed >= 5ms);
+
+    std::cout << "[PASS] timer + task ("
+              << elapsed.count() << " ms)\n";
+  }
+
+  {
+    int counter = 0;
+
+    auto task = [&]() -> coasio::task<void> {
+      ++counter;
+      co_return;
+    };
+
+    rt.spawn(task());
+    rt.spawn(task());
+    rt.spawn(task());
+
+    rt.block_on([]() -> coasio::task<void> {
+      co_await coasio::time::sleep(1s);
+      co_return;
+    }());
+
+    assert(counter == 3);
+
+    std::cout << "[PASS] multiple tasks\n";
   }
 }

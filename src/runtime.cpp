@@ -6,24 +6,10 @@ void coasio::worker::run() const {
   runtime::context_guard guard(runtime_);
 
   while (!runtime_->stop_requested_) {
-    std::coroutine_handle<> task; {
-      std::unique_lock lock(runtime_->global_tasks_queue_mutex_);
-
-      runtime_->global_tasks_queue_cv_.wait(lock, [this] {
-        return !runtime_->global_tasks_.empty() || runtime_->stop_requested_;
-      });
-
-      if (runtime_->stop_requested_ && runtime_->global_tasks_.empty()) {
-        return;
+    if (auto task = runtime_->get_next_task_from_queue()) {
+      if (*task) {
+        task->resume();
       }
-
-      task = runtime_->global_tasks_.front();
-      runtime_->global_tasks_.pop();
-    }
-    if (task) {
-      task.resume();
-      //if (task.done())
-      //  task.destroy();
     }
   }
 }
@@ -59,13 +45,7 @@ coasio::runtime::~runtime() {
   global_tasks_queue_cv_.notify_all();
   work_guard_.reset();
   io_context_.stop();
+
+  io_worker_threads_.clear();
+  worker_threads_.clear();
 };
-
-void coasio::runtime::block_on(const std::coroutine_handle<> task) {
-  context_guard guard(this);
-
-  if (!task) return;
-  while (task.done() == false) {
-    task.resume();
-  }
-}

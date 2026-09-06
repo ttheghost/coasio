@@ -7,6 +7,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <future>
 #include <coroutine>
 #include <iostream>
 #include <asio/io_context.hpp>
@@ -40,16 +41,17 @@ namespace coasio {
     std::queue<std::coroutine_handle<> > global_tasks_;
     std::mutex global_tasks_queue_mutex_;
     std::condition_variable global_tasks_queue_cv_;
-    std::vector<std::jthread> worker_threads_;
-    std::vector<std::jthread> io_worker_threads_;
+    std::atomic<bool> stop_requested_{false};
     asio::io_context io_context_;
     asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
-    std::atomic<bool> stop_requested_{false};
+    std::vector<std::jthread> io_worker_threads_;
+    std::vector<std::jthread> worker_threads_;
 
     static inline thread_local runtime *current_runtime_ = nullptr;
 
   public:
     runtime();
+
     ~runtime();
 
     static runtime *current() noexcept {
@@ -68,7 +70,31 @@ namespace coasio {
       }
     };
 
-    void block_on(std::coroutine_handle<> task);
+    template<typename T>
+    T block_on(task<T> t) {
+      context_guard guard(this);
+
+      using promise_t = std::conditional_t<std::is_void_v<T>, std::promise<void>, std::promise<T> >;
+
+      auto promise = std::make_shared<promise_t>();
+      auto future = promise->get_future();
+
+      spawn([](task<T> t, std::shared_ptr<promise_t> p) -> task<void> {
+        try {
+          if constexpr (std::is_void_v<T>) {
+            co_await std::move(t);
+            p->set_value();
+          } else {
+            T result = co_await std::move(t);
+            p->set_value(std::move(result));
+          }
+        } catch (...) {
+          p->set_exception(std::current_exception());
+        }
+      }(std::move(t), promise));
+
+      return future.get();
+    }
 
     template<typename T>
     static void spawn(task<T> task) {
@@ -77,15 +103,34 @@ namespace coasio {
         std::cout << "Called outside a coasio runtime\n";
         std::terminate();
       }
-      rt->schedule(task.release());
+      if (auto handle = task.detach())
+        rt->schedule(handle);
     }
 
-    asio::io_context& get_io_context() {
+    asio::io_context &get_io_context() {
       return io_context_;
     }
 
     void schedule(std::coroutine_handle<> h) {
       if (!h) return;
+      put_task_in_queue(h);
+    }
+
+    // Queue
+    std::optional<std::coroutine_handle<>> get_next_task_from_queue() {
+      std::unique_lock lock(global_tasks_queue_mutex_);
+      global_tasks_queue_cv_.wait(lock, [this] {
+        return !global_tasks_.empty() || stop_requested_;
+      });
+      if (stop_requested_ && global_tasks_.empty()) {
+        return std::nullopt;
+      }
+      auto h = global_tasks_.front();
+      global_tasks_.pop();
+      return h;
+    }
+
+    void put_task_in_queue(std::coroutine_handle<> h) {
       std::unique_lock lock(global_tasks_queue_mutex_);
       global_tasks_.push(h);
       global_tasks_queue_cv_.notify_one();

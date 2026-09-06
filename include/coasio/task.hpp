@@ -11,9 +11,10 @@ namespace coasio {
   class task {
   public:
     struct promise_type {
-      std::coroutine_handle<> continuation_{nullptr};
       std::optional<T> result_;
       std::exception_ptr exception_;
+      std::coroutine_handle<> continuation_;
+      bool detached_ = false;
 
       task get_return_object() {
         return task{std::coroutine_handle<promise_type>::from_promise(*this)};
@@ -23,10 +24,15 @@ namespace coasio {
 
       auto final_suspend() noexcept {
         struct final_awaiter {
-          bool await_ready() noexcept { return false; }
+          bool await_ready() const noexcept { return false; }
 
           std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
-            return h.promise().continuation_ ? h.promise().continuation_ : std::noop_coroutine();
+            auto &p = h.promise();
+            if (p.detached_) {
+              h.destroy();
+              return std::noop_coroutine();
+            }
+            return (p.continuation_) ? p.continuation_ : std::noop_coroutine();
           }
 
           void await_resume() noexcept {
@@ -43,6 +49,10 @@ namespace coasio {
       struct awaiter {
         std::coroutine_handle<promise_type> handle_;
 
+        ~awaiter() {
+          if (handle_) handle_.destroy();
+        }
+
         bool await_ready() const noexcept { return !handle_ || handle_.done(); }
 
         std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
@@ -51,28 +61,121 @@ namespace coasio {
         }
 
         T await_resume() {
-          if (handle_.promise().exception_) {
-            auto exception = handle_.promise().exception_;
-            handle_.destroy();
-            std::rethrow_exception(exception);
-          }
-          T res = std::move(*handle_.promise().result_);
-          handle_.destroy();
-          return res;
+          auto &p = handle_.promise();
+          if (p.exception_)
+            std::rethrow_exception(p.exception_);
+          return std::move(*p.result_);
         }
       };
-      return awaiter{std::exchange(handle_, {})};
+      return awaiter{std::exchange(handle_, nullptr)};
     }
 
-    explicit task(std::coroutine_handle<promise_type> h) : handle_(h) {}
+    explicit task(std::coroutine_handle<promise_type> h) : handle_(h) {
+    }
+
+    task(task &&o) noexcept : handle_(std::exchange(o.handle_, {})) {
+    }
+
+    task(const task &) = delete;
+
     ~task() { if (handle_) handle_.destroy(); }
-    task(task &&other) noexcept : handle_(std::exchange(other.handle_, {})) {}
 
-    T get() { return std::move(*handle_.promise().result_); }
+    std::coroutine_handle<promise_type> release() noexcept { return std::exchange(handle_, nullptr); }
 
-    std::coroutine_handle<promise_type> handle() { return handle_; }
+    std::coroutine_handle<promise_type> detach() noexcept {
+      auto h = release();
+      if (h)
+        h.promise().detached_ = true;
+      return h;
+    }
 
-    std::coroutine_handle<promise_type> release() { return std::exchange(handle_, {}); }
+    std::coroutine_handle<> handle() const noexcept { return handle_; }
+
+  private:
+    std::coroutine_handle<promise_type> handle_;
+  };
+
+  template<>
+  class task<void> {
+  public:
+    struct promise_type {
+      std::exception_ptr exception_;
+      std::coroutine_handle<> continuation_;
+      bool detached_ = false;
+
+      task get_return_object() {
+        return task{std::coroutine_handle<promise_type>::from_promise(*this)};
+      }
+
+      std::suspend_always initial_suspend() { return {}; }
+
+      auto final_suspend() noexcept {
+        struct final_awaiter {
+          bool await_ready() const noexcept { return false; }
+
+          std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+            auto &p = h.promise();
+            if (p.detached_) {
+              h.destroy();
+              return std::noop_coroutine();
+            }
+            return (p.continuation_) ? p.continuation_ : std::noop_coroutine();
+          }
+
+          void await_resume() noexcept {
+          }
+        };
+        return final_awaiter{};
+      }
+
+      void return_void() {}
+      void unhandled_exception() { exception_ = std::current_exception(); }
+    };
+
+    auto operator co_await() && noexcept {
+      struct awaiter {
+        std::coroutine_handle<promise_type> handle_;
+
+        ~awaiter() {
+          if (handle_) handle_.destroy();
+        }
+
+        bool await_ready() const noexcept { return !handle_ || handle_.done(); }
+
+        std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
+          handle_.promise().continuation_ = caller;
+          return handle_;
+        }
+
+        void await_resume() const {
+          auto &p = handle_.promise();
+          if (p.exception_)
+            std::rethrow_exception(p.exception_);
+        }
+      };
+      return awaiter{std::exchange(handle_, nullptr)};
+    }
+
+    explicit task(std::coroutine_handle<promise_type> h) : handle_(h) {
+    }
+
+    task(task &&o) noexcept : handle_(std::exchange(o.handle_, {})) {
+    }
+
+    task(const task &) = delete;
+
+    ~task() { if (handle_) handle_.destroy(); }
+
+    std::coroutine_handle<promise_type> release() noexcept { return std::exchange(handle_, nullptr); }
+
+    std::coroutine_handle<promise_type> detach() noexcept {
+      auto h = release();
+      if (h)
+        h.promise().detached_ = true;
+      return h;
+    }
+
+    std::coroutine_handle<> handle() const noexcept { return handle_; }
 
   private:
     std::coroutine_handle<promise_type> handle_;
