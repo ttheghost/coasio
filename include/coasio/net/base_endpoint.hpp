@@ -3,11 +3,16 @@
 #include <asio/ip/tcp.hpp>
 
 #include "tcp/ip_address.hpp"
+#include "tcp/socket.hpp"
 
 namespace coasio::net {
 template <typename InternetProtocol> class base_endpoint {
 public:
   typedef InternetProtocol protocol_type;
+
+  explicit base_endpoint(
+      asio::ip::basic_endpoint<protocol_type> endpoint) noexcept
+      : endpoint_{endpoint} {}
 
   base_endpoint(tcp::ipAddress addr, const uint16_t port) noexcept
       : endpoint_{addr.asio_address(), port} {}

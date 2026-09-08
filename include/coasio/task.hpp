@@ -40,7 +40,12 @@ public:
       return final_awaiter{};
     }
 
-    void return_value(T value) { result_ = std::move(value); }
+    template <typename U>
+    void return_value(U &&value)
+      requires std::is_convertible_v<U, T>
+    {
+      result_.emplace(std::forward<U>(value));
+    }
     void unhandled_exception() { exception_ = std::current_exception(); }
   };
 

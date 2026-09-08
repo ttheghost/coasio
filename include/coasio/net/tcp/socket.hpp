@@ -1,27 +1,30 @@
 #ifndef COASIO_NET_TCP_SOCKET_HPP
 #define COASIO_NET_TCP_SOCKET_HPP
 #include <expected>
+#include <span>
 #include <string>
 #include <string_view>
 
 #include <asio/connect.hpp>
 #include <asio/ip/tcp.hpp>
+#include <asio/read.hpp>
+#include <asio/write.hpp>
 
 #include "coasio/net/helper.hpp"
 #include "endpoint.hpp"
 #include "resolver.hpp"
 
 namespace coasio::net::tcp {
-class tcpSocket {
+class socket {
   auto connect_impl(const asio::ip::tcp::resolver::results_type &endpoints) {
     struct connect_any_awaiter {
       std::error_code ec_;
-      tcpSocket &socket_;
+      socket &socket_;
       asio::ip::tcp::resolver::results_type endpoints_;
 
       explicit connect_any_awaiter(
-          tcpSocket &socket, const asio::ip::tcp::resolver::results_type &eps)
-          : socket_{socket}, endpoints_{eps} {}
+          socket &sck, const asio::ip::tcp::resolver::results_type &eps)
+          : socket_{sck}, endpoints_{eps} {}
 
       bool await_ready() const noexcept { return false; }
 
@@ -35,7 +38,7 @@ class tcpSocket {
             });
       }
 
-      std::expected<void, std::error_code> await_resume() const noexcept {
+      std::expected<void, std::error_code> await_resume() noexcept {
         if (ec_)
           return std::unexpected(ec_);
         return {};
@@ -46,12 +49,12 @@ class tcpSocket {
   }
 
 public:
-  static tcpSocket create() noexcept {
-    asio::ip::tcp::socket socket(runtime::get_current_io_context());
-    return tcpSocket{std::move(socket)};
+  static socket create() noexcept {
+    asio::ip::tcp::socket sck(runtime::get_current_io_context());
+    return socket{std::move(sck)};
   }
 
-  static task<std::expected<tcpSocket, std::error_code>>
+  static task<std::expected<socket, std::error_code>>
   connect_to(std::string_view host_and_port) {
     auto maybe_hap = parse_host_port(host_and_port);
     if (!maybe_hap) {
@@ -62,7 +65,6 @@ public:
           std::make_error_code(std::errc::invalid_argument));
     }
     auto [host, port] = maybe_hap.value();
-    std::cout << host << "<:>" << port.value() << "\n";
 
     resolver r = resolver::create();
     auto maybe_eps = co_await r.resolve(host, std::to_string(port.value()));
@@ -70,35 +72,35 @@ public:
       co_return std::unexpected(maybe_eps.error());
     }
 
-    auto socket = tcpSocket::create();
-    auto result = co_await socket.connect_impl(*maybe_eps);
+    auto sck = socket::create();
+    auto result = co_await sck.connect_impl(*maybe_eps);
     if (!result) {
       co_return std::unexpected(result.error());
     }
-    co_return socket;
+    co_return std::move(sck);
   }
 
   auto connect(const endpoint &ep) {
     struct connect_awaiter {
       std::error_code ec_;
-      tcpSocket &socket_;
+      socket &socket_;
       endpoint ep_;
 
-      explicit connect_awaiter(tcpSocket &socket, endpoint ep)
+      explicit connect_awaiter(socket &socket, endpoint ep)
           : socket_{socket}, ep_{ep} {}
 
       bool await_ready() const noexcept { return false; }
 
       void await_suspend(std::coroutine_handle<> h) noexcept {
         auto *rt = runtime::current();
-        socket_.socket_.async_connect(
+        socket_.asio_handle().async_connect(
             ep_.asio_endpoint(), [h, rt, this](const asio::error_code &ec) {
               ec_ = ec;
               rt->schedule(h);
             });
       }
 
-      std::expected<void, std::error_code> await_resume() const noexcept {
+      std::expected<void, std::error_code> await_resume() noexcept {
         if (ec_)
           return std::unexpected(std::move(ec_));
         return {};
@@ -108,12 +110,167 @@ public:
     return connect_awaiter{*this, ep};
   }
 
+  auto read(std::span<std::byte> buffer) {
+    struct read_awaiter {
+      std::error_code ec_;
+      std::span<std::byte> buffer_;
+      socket &socket_;
+      std::size_t bytes_read_ = 0;
+
+      explicit read_awaiter(socket &socket, std::span<std::byte> buffer)
+          : socket_(socket), buffer_(buffer) {}
+
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> h) noexcept {
+        runtime *rt = runtime::current();
+        asio::async_read(socket_.asio_handle(), asio::buffer(buffer_),
+                         [h, rt, this](const asio::error_code &ec,
+                                       std::size_t bytes_transferred) {
+                           ec_ = ec;
+                           bytes_read_ = bytes_transferred;
+                           rt->schedule(h);
+                         });
+      }
+
+      std::expected<size_t, std::error_code> await_resume() noexcept {
+        if (ec_)
+          return std::unexpected(std::move(ec_));
+        return bytes_read_;
+      }
+    };
+
+    return read_awaiter{*this, buffer};
+  }
+
+  auto read_some(std::span<std::byte> buffer) {
+    struct read_some_awaiter {
+      std::error_code ec_;
+      std::span<std::byte> buffer_;
+      socket &socket_;
+      std::size_t bytes_read_ = 0;
+
+      explicit read_some_awaiter(socket &socket, std::span<std::byte> buffer)
+          : socket_(socket), buffer_(buffer) {}
+
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> h) noexcept {
+        runtime *rt = runtime::current();
+        socket_.asio_handle().async_read_some(
+            asio::buffer(buffer_),
+            [h, rt, this](const asio::error_code &ec,
+                          std::size_t bytes_transferred) {
+              ec_ = ec;
+              bytes_read_ = bytes_transferred;
+              rt->schedule(h);
+            });
+      }
+
+      std::expected<size_t, std::error_code> await_resume() noexcept {
+        if (ec_)
+          return std::unexpected(std::move(ec_));
+        return bytes_read_;
+      }
+    };
+
+    return read_some_awaiter{*this, buffer};
+  }
+
+  // TODO: read_until
+
+  auto write(std::span<const std::byte> buffer) {
+    struct write_awaiter {
+      std::error_code ec_;
+      std::span<const std::byte> buffer_;
+      socket &socket_;
+      std::size_t bytes_written_ = 0;
+
+      explicit write_awaiter(socket &socket, std::span<const std::byte> buffer)
+          : socket_(socket), buffer_(buffer) {}
+
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> h) noexcept {
+        runtime *rt = runtime::current();
+        asio::async_write(socket_.asio_handle(), asio::buffer(buffer_),
+                          [h, rt, this](const asio::error_code &ec,
+                                        std::size_t bytes_transferred) {
+                            ec_ = ec;
+                            bytes_written_ = bytes_transferred;
+                            rt->schedule(h);
+                          });
+      }
+
+      std::expected<size_t, std::error_code> await_resume() noexcept {
+        if (ec_)
+          return std::unexpected(std::move(ec_));
+        return bytes_written_;
+      }
+    };
+
+    return write_awaiter{*this, buffer};
+  }
+
+  auto write_some(std::span<const std::byte> buffer) {
+    struct write_some_awaiter {
+      std::error_code ec_;
+      std::span<const std::byte> buffer_;
+      socket &socket_;
+      std::size_t bytes_written_ = 0;
+
+      explicit write_some_awaiter(socket &socket,
+                                  std::span<const std::byte> buffer)
+          : socket_(socket), buffer_(buffer) {}
+
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> h) noexcept {
+        runtime *rt = runtime::current();
+        socket_.asio_handle().async_write_some(
+            asio::buffer(buffer_),
+            [h, rt, this](const asio::error_code &ec,
+                          std::size_t bytes_transferred) {
+              ec_ = ec;
+              bytes_written_ = bytes_transferred;
+              rt->schedule(h);
+            });
+      }
+
+      std::expected<size_t, std::error_code> await_resume() noexcept {
+        if (ec_)
+          return std::unexpected(std::move(ec_));
+        return bytes_written_;
+      }
+    };
+
+    return write_some_awaiter{*this, buffer};
+  }
+
+  std::expected<void, std::error_code> close() {
+    std::error_code ec_;
+    socket_.close(ec_);
+    if (ec_)
+      return std::unexpected(std::move(ec_));
+    return {};
+  }
+
+  endpoint remote_endpoint() const {
+    const auto ep = socket_.remote_endpoint();
+    return endpoint{ep};
+  }
+
+  endpoint local_endpoint() const {
+    const auto ep = socket_.local_endpoint();
+    return endpoint{ep};
+  }
+
   auto native_handle() noexcept { return socket_.native_handle(); }
 
   asio::ip::tcp::socket &asio_handle() noexcept { return socket_; }
 
 private:
-  explicit tcpSocket(asio::ip::tcp::socket socket) noexcept
+  explicit socket(asio::ip::tcp::socket socket) noexcept
       : socket_{std::move(socket)} {}
 
   asio::ip::tcp::socket socket_;
