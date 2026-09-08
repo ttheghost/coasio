@@ -14,11 +14,9 @@ void coasio::worker::run() const {
   }
 }
 
-void coasio::io_worker::run() const {
-  runtime_->io_context_.run();
-}
+void coasio::io_worker::run() const { runtime_->io_context_.run(); }
 
-coasio::runtime::runtime(): work_guard_(asio::make_work_guard(io_context_)) {
+coasio::runtime::runtime() : work_guard_(asio::make_work_guard(io_context_)) {
   auto num_threads = std::thread::hardware_concurrency();
   if (num_threads == 0)
     num_threads = 1;
