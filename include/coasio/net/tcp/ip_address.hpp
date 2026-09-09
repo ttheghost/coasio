@@ -4,34 +4,34 @@
 #include <asio/ip/address.hpp>
 
 namespace coasio::net::tcp {
-class ipAddress {
+class ip_address {
 public:
-  ipAddress() = default;
+  ip_address() = default;
 
-  static ipAddress v4() noexcept {
-    return ipAddress{asio::ip::address_v4::any()};
+  static ip_address v4() noexcept {
+    return ip_address{asio::ip::address_v4::any()};
   }
 
-  static ipAddress v6() noexcept {
-    return ipAddress{asio::ip::address_v6::any()};
+  static ip_address v6() noexcept {
+    return ip_address{asio::ip::address_v6::any()};
   }
 
-  static ipAddress v4(const uint32_t addr) {
-    return ipAddress{asio::ip::address_v4{addr}};
+  static ip_address v4(const uint32_t addr) {
+    return ip_address{asio::ip::address_v4{addr}};
   }
 
-  static ipAddress v6(const std::array<uint8_t, 16> &addr) {
-    return ipAddress{asio::ip::address_v6{addr}};
+  static ip_address v6(const std::array<uint8_t, 16> &addr) {
+    return ip_address{asio::ip::address_v6{addr}};
   }
 
-  static std::expected<ipAddress, std::error_code>
+  static std::expected<ip_address, std::error_code>
   from_string(std::string_view ip_string) noexcept {
     asio::error_code ec;
     const auto addr = asio::ip::make_address(ip_string, ec);
     if (ec) {
       return std::unexpected(ec);
     }
-    return ipAddress{addr};
+    return ip_address{addr};
   }
 
   [[nodiscard]] bool is_v4() const noexcept { return address_.is_v4(); }
@@ -52,9 +52,13 @@ public:
 
   [[nodiscard]] std::string to_string() const { return address_.to_string(); }
 
-  [[nodiscard]] ipAddress to_v4() const { return ipAddress{address_.to_v4()}; }
+  [[nodiscard]] ip_address to_v4() const {
+    return ip_address{address_.to_v4()};
+  }
 
-  [[nodiscard]] ipAddress to_v6() const { return ipAddress{address_.to_v6()}; }
+  [[nodiscard]] ip_address to_v6() const {
+    return ip_address{address_.to_v6()};
+  }
 
   [[nodiscard]] auto &asio_address() noexcept { return address_; }
 
@@ -63,7 +67,7 @@ public:
 private:
   asio::ip::address address_{};
 
-  explicit ipAddress(const asio::ip::address &address) noexcept
+  explicit ip_address(const asio::ip::address &address) noexcept
       : address_{address} {}
 };
 }; // namespace coasio::net::tcp

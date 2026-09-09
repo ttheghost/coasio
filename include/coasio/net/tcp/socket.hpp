@@ -49,6 +49,12 @@ class socket {
   }
 
 public:
+  using wait_type = asio::ip::tcp::socket::wait_type;
+  using shutdown_type = asio::ip::tcp::socket::shutdown_type;
+
+  explicit socket(asio::ip::tcp::socket socket) noexcept
+      : socket_{std::move(socket)} {}
+
   static socket create() noexcept {
     asio::ip::tcp::socket sck(runtime::get_current_io_context());
     return socket{std::move(sck)};
@@ -108,6 +114,19 @@ public:
     };
 
     return connect_awaiter{*this, ep};
+  }
+
+  std::expected<void, std::error_code> bind(const endpoint &ep) {
+    std::error_code ec_;
+    if (!socket_.is_open()) {
+      socket_.open(ep.asio_endpoint().protocol(), ec_);
+      if (ec_)
+        return std::unexpected(ec_);
+    }
+    socket_.bind(ep.asio_endpoint(), ec_);
+    if (ec_)
+      return std::unexpected(ec_);
+    return {};
   }
 
   auto read(std::span<std::byte> buffer) {
@@ -247,6 +266,52 @@ public:
     return write_some_awaiter{*this, buffer};
   }
 
+  auto wait(wait_type type) {
+    struct wait_awaiter {
+      std::error_code ec_;
+      socket &socket_;
+      wait_type type_;
+
+      explicit wait_awaiter(socket &sck, wait_type type)
+          : socket_{sck}, type_{type} {}
+
+      bool await_ready() const noexcept { return false; }
+
+      void await_suspend(std::coroutine_handle<> h) noexcept {
+        runtime *rt = runtime::current();
+        socket_.asio_handle().async_wait(
+            type_, [h, rt, this](const asio::error_code &ec) {
+              ec_ = ec;
+              rt->schedule(h);
+            });
+      }
+
+      std::expected<void, std::error_code> await_resume() noexcept {
+        if (ec_)
+          return std::unexpected(std::move(ec_));
+        return {};
+      }
+    };
+
+    return wait_awaiter{*this, type};
+  }
+
+  std::expected<size_t, std::error_code> available() const {
+    std::error_code ec_;
+    size_t bytes_available = socket_.available(ec_);
+    if (ec_)
+      return std::unexpected(std::move(ec_));
+    return bytes_available;
+  }
+
+  std::expected<void, std::error_code> shutdown(const shutdown_type type) {
+    std::error_code ec_;
+    socket_.shutdown(type, ec_);
+    if (ec_)
+      return std::unexpected(std::move(ec_));
+    return {};
+  }
+
   std::expected<void, std::error_code> close() {
     std::error_code ec_;
     socket_.close(ec_);
@@ -255,13 +320,21 @@ public:
     return {};
   }
 
-  endpoint remote_endpoint() const {
-    const auto ep = socket_.remote_endpoint();
+  bool is_open() const { return socket_.is_open(); }
+
+  std::expected<endpoint, std::error_code> remote_endpoint() const noexcept {
+    asio::error_code ec;
+    auto ep = socket_.remote_endpoint(ec);
+    if (ec)
+      return std::unexpected{ec};
     return endpoint{ep};
   }
 
-  endpoint local_endpoint() const {
-    const auto ep = socket_.local_endpoint();
+  std::expected<endpoint, std::error_code> local_endpoint() const noexcept {
+    asio::error_code ec;
+    auto ep = socket_.local_endpoint(ec);
+    if (ec)
+      return std::unexpected{ec};
     return endpoint{ep};
   }
 
@@ -270,9 +343,6 @@ public:
   asio::ip::tcp::socket &asio_handle() noexcept { return socket_; }
 
 private:
-  explicit socket(asio::ip::tcp::socket socket) noexcept
-      : socket_{std::move(socket)} {}
-
   asio::ip::tcp::socket socket_;
 };
 }; // namespace coasio::net::tcp
