@@ -10,6 +10,7 @@
 #include <asio/read.hpp>
 #include <asio/write.hpp>
 
+#include "coasio/detail/async_op.hpp"
 #include "coasio/net/helper.hpp"
 #include "endpoint.hpp"
 #include "resolver.hpp"
@@ -17,35 +18,11 @@
 namespace coasio::net::tcp {
 class socket {
   auto connect_impl(const asio::ip::tcp::resolver::results_type &endpoints) {
-    struct connect_any_awaiter {
-      std::error_code ec_;
-      socket &socket_;
-      asio::ip::tcp::resolver::results_type endpoints_;
-
-      explicit connect_any_awaiter(
-          socket &sck, const asio::ip::tcp::resolver::results_type &eps)
-          : socket_{sck}, endpoints_{eps} {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        auto *rt = runtime::current();
-        asio::async_connect(
-            socket_.asio_handle(), endpoints_.begin(), endpoints_.end(),
-            [h, rt, this](const asio::error_code &ec, auto /*iterator*/) {
-              ec_ = ec;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<void, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(ec_);
-        return {};
-      }
-    };
-
-    return connect_any_awaiter{*this, endpoints};
+    return detail::async_op<void>(
+        [this, endpoints]<typename Args>(Args &&token) {
+          asio::async_connect(asio_handle(), endpoints.begin(), endpoints.end(),
+                              std::forward<Args>(token));
+        });
   }
 
 public:
@@ -56,8 +33,7 @@ public:
       : socket_{std::move(socket)} {}
 
   static socket create() noexcept {
-    asio::ip::tcp::socket sck(runtime::get_current_io_context());
-    return socket{std::move(sck)};
+    return socket{asio::ip::tcp::socket{runtime::get_current_io_context()}};
   }
 
   static task<std::expected<socket, std::error_code>>
@@ -87,33 +63,10 @@ public:
   }
 
   auto connect(const endpoint &ep) {
-    struct connect_awaiter {
-      std::error_code ec_;
-      socket &socket_;
-      endpoint ep_;
-
-      explicit connect_awaiter(socket &socket, endpoint ep)
-          : socket_{socket}, ep_{ep} {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        auto *rt = runtime::current();
-        socket_.asio_handle().async_connect(
-            ep_.asio_endpoint(), [h, rt, this](const asio::error_code &ec) {
-              ec_ = ec;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<void, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return {};
-      }
-    };
-
-    return connect_awaiter{*this, ep};
+    return detail::async_op<void>([this, ep]<typename Args>(Args &&token) {
+      asio_handle().async_connect(ep.asio_endpoint(),
+                                  std::forward<Args>(token));
+    });
   }
 
   std::expected<void, std::error_code> bind(const endpoint &ep) {
@@ -130,170 +83,42 @@ public:
   }
 
   auto read(std::span<std::byte> buffer) {
-    struct read_awaiter {
-      std::error_code ec_;
-      std::span<std::byte> buffer_;
-      socket &socket_;
-      std::size_t bytes_read_ = 0;
-
-      explicit read_awaiter(socket &socket, std::span<std::byte> buffer)
-          : socket_(socket), buffer_(buffer) {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        asio::async_read(socket_.asio_handle(), asio::buffer(buffer_),
-                         [h, rt, this](const asio::error_code &ec,
-                                       std::size_t bytes_transferred) {
-                           ec_ = ec;
-                           bytes_read_ = bytes_transferred;
-                           rt->schedule(h);
-                         });
-      }
-
-      std::expected<size_t, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return bytes_read_;
-      }
-    };
-
-    return read_awaiter{*this, buffer};
+    return detail::async_op<size_t>(
+        [this, buffer]<typename Args>(Args &&token) {
+          asio::async_read(asio_handle(), buffer, std::forward<Args>(token));
+        });
   }
 
   auto read_some(std::span<std::byte> buffer) {
-    struct read_some_awaiter {
-      std::error_code ec_;
-      std::span<std::byte> buffer_;
-      socket &socket_;
-      std::size_t bytes_read_ = 0;
-
-      explicit read_some_awaiter(socket &socket, std::span<std::byte> buffer)
-          : socket_(socket), buffer_(buffer) {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        socket_.asio_handle().async_read_some(
-            asio::buffer(buffer_),
-            [h, rt, this](const asio::error_code &ec,
-                          std::size_t bytes_transferred) {
-              ec_ = ec;
-              bytes_read_ = bytes_transferred;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<size_t, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return bytes_read_;
-      }
-    };
-
-    return read_some_awaiter{*this, buffer};
+    return detail::async_op<size_t>(
+        [this, buffer]<typename Args>(Args &&token) {
+          asio_handle().async_read_some(asio::buffer(buffer),
+                                        std::forward<Args>(token));
+        });
   }
 
   // TODO: read_until
 
   auto write(std::span<const std::byte> buffer) {
-    struct write_awaiter {
-      std::error_code ec_;
-      std::span<const std::byte> buffer_;
-      socket &socket_;
-      std::size_t bytes_written_ = 0;
-
-      explicit write_awaiter(socket &socket, std::span<const std::byte> buffer)
-          : socket_(socket), buffer_(buffer) {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        asio::async_write(socket_.asio_handle(), asio::buffer(buffer_),
-                          [h, rt, this](const asio::error_code &ec,
-                                        std::size_t bytes_transferred) {
-                            ec_ = ec;
-                            bytes_written_ = bytes_transferred;
-                            rt->schedule(h);
-                          });
-      }
-
-      std::expected<size_t, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return bytes_written_;
-      }
-    };
-
-    return write_awaiter{*this, buffer};
+    return detail::async_op<size_t>(
+        [this, buffer]<typename Args>(Args &&token) {
+          asio::async_write(asio_handle(), asio::buffer(buffer),
+                            std::forward<Args>(token));
+        });
   }
 
   auto write_some(std::span<const std::byte> buffer) {
-    struct write_some_awaiter {
-      std::error_code ec_;
-      std::span<const std::byte> buffer_;
-      socket &socket_;
-      std::size_t bytes_written_ = 0;
-
-      explicit write_some_awaiter(socket &socket,
-                                  std::span<const std::byte> buffer)
-          : socket_(socket), buffer_(buffer) {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        socket_.asio_handle().async_write_some(
-            asio::buffer(buffer_),
-            [h, rt, this](const asio::error_code &ec,
-                          std::size_t bytes_transferred) {
-              ec_ = ec;
-              bytes_written_ = bytes_transferred;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<size_t, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return bytes_written_;
-      }
-    };
-
-    return write_some_awaiter{*this, buffer};
+    return detail::async_op<size_t>(
+        [this, buffer]<typename Args>(Args &&token) {
+          asio_handle().async_write_some(asio::buffer(buffer),
+                                         std::forward<Args>(token));
+        });
   }
 
   auto wait(wait_type type) {
-    struct wait_awaiter {
-      std::error_code ec_;
-      socket &socket_;
-      wait_type type_;
-
-      explicit wait_awaiter(socket &sck, wait_type type)
-          : socket_{sck}, type_{type} {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        socket_.asio_handle().async_wait(
-            type_, [h, rt, this](const asio::error_code &ec) {
-              ec_ = ec;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<void, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return {};
-      }
-    };
-
-    return wait_awaiter{*this, type};
+    return detail::async_op<void>([this, type]<typename Args>(Args &&token) {
+      asio_handle().async_wait(type, std::forward<Args>(token));
+    });
   }
 
   std::expected<size_t, std::error_code> available() const {

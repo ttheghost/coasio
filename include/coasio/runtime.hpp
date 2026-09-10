@@ -1,7 +1,6 @@
 #ifndef COASIO_RUNTIME_HPP
 #define COASIO_RUNTIME_HPP
 
-#include <asio/cancellation_signal.hpp>
 #include <asio/io_context.hpp>
 #include <atomic>
 #include <condition_variable>
@@ -140,41 +139,6 @@ public:
   friend class worker;
   friend class io_worker;
 };
-
-namespace detail {
-template <typename Initiator, typename... Args> class asioAwaitable {
-public:
-  using ResultTuple = std::tuple<Args..., std::error_code>;
-  Initiator initiator_;
-  ResultTuple result_;
-
-  explicit asioAwaitable(Initiator &&initiator) noexcept
-      : initiator_(std::move(initiator)) {}
-
-  bool await_ready() const noexcept { return false; }
-
-  void await_suspend(std::coroutine_handle<> h) noexcept {
-    initiator_([this, h](const std::error_code &ec, auto... args) {
-      if constexpr (sizeof...(args) == 0) {
-        this->result_ = {ec};
-      } else {
-        this->result_ = {args..., ec};
-      }
-      runtime::current()->schedule(h);
-    });
-  }
-
-  ResultTuple await_resume() noexcept { return result_; }
-#if __cpp_lib_expected >= 202202L
-#endif
-};
-
-template <typename... Args, typename Initiator>
-auto async_op(Initiator &&initiator) {
-  return asioAwaitable<std::decay_t<Initiator>, Args...>{
-      std::forward<Initiator>(initiator)};
-}
-}; // namespace detail
 }; // namespace coasio
 
 #endif // !COASIO_RUNTIME_HPP
