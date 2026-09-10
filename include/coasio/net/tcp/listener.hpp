@@ -11,8 +11,7 @@ public:
   using wait_type = asio::ip::tcp::acceptor::wait_type;
 
   static listener create() {
-    asio::ip::tcp::acceptor lsnr(runtime::get_current_io_context());
-    return listener{std::move(lsnr)};
+    return listener{asio::ip::tcp::acceptor{runtime::get_current_io_context()}};
   }
 
   static std::expected<listener, std::error_code>
@@ -81,33 +80,9 @@ public:
   }
 
   auto wait(wait_type type) {
-    struct wait_awaiter {
-      std::error_code ec_;
-      listener &listener_;
-      wait_type type_;
-
-      explicit wait_awaiter(listener &listener, wait_type type)
-          : listener_{listener}, type_{type} {}
-
-      bool await_ready() const noexcept { return false; }
-
-      void await_suspend(std::coroutine_handle<> h) noexcept {
-        runtime *rt = runtime::current();
-        listener_.asio_handle().async_wait(
-            type_, [h, rt, this](const asio::error_code &ec) {
-              ec_ = ec;
-              rt->schedule(h);
-            });
-      }
-
-      std::expected<void, std::error_code> await_resume() noexcept {
-        if (ec_)
-          return std::unexpected(std::move(ec_));
-        return {};
-      }
-    };
-
-    return wait_awaiter{*this, type};
+    return detail::async_op<void>([this, type]<typename Args>(Args &&token) {
+      asio_handle().async_wait(type, std::forward<Args>(token));
+    });
   }
 
   std::expected<void, std::error_code> close() {
