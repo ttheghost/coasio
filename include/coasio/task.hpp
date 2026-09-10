@@ -6,12 +6,15 @@
 #include <optional>
 #include <utility>
 
+#include <asio/cancellation_signal.hpp>
+
 namespace coasio {
 template <typename T> class task {
 public:
   struct promise_type {
     std::optional<T> result_;
     std::exception_ptr exception_;
+    asio::cancellation_slot cancel_slot_;
     std::coroutine_handle<> continuation_;
     bool detached_ = false;
 
@@ -47,6 +50,20 @@ public:
       result_.emplace(std::forward<U>(value));
     }
     void unhandled_exception() { exception_ = std::current_exception(); }
+
+    template <typename U> auto await_transform(task<U> &&child) {
+      child.handle().promise().cancel_slot_ = cancel_slot_;
+      return std::move(child);
+    }
+
+    template <typename Awaitable>
+    decltype(auto) await_transform(Awaitable &&a) {
+      // Leaves (timers, sockets, etc.)
+      if constexpr (requires { a.set_cancel_slot(cancel_slot_); }) {
+        a.set_cancel_slot(cancel_slot_);
+      }
+      return std::forward<Awaitable>(a);
+    }
   };
 
   template <typename Self> auto operator co_await(this Self &&self) noexcept {
@@ -101,7 +118,9 @@ public:
     return h;
   }
 
-  std::coroutine_handle<> handle() const noexcept { return handle_; }
+  std::coroutine_handle<promise_type> handle() const noexcept {
+    return handle_;
+  }
 
 private:
   std::coroutine_handle<promise_type> handle_;
@@ -111,6 +130,7 @@ template <> class task<void> {
 public:
   struct promise_type {
     std::exception_ptr exception_;
+    asio::cancellation_slot cancel_slot_;
     std::coroutine_handle<> continuation_;
     bool detached_ = false;
 
@@ -142,6 +162,16 @@ public:
     void return_void() {}
 
     void unhandled_exception() { exception_ = std::current_exception(); }
+
+    template <typename U> auto await_transform(task<U> &&child) {
+      child.handle().promise().cancel_slot_ = cancel_slot_;
+      return std::move(child);
+    }
+
+    template <typename Awaitable>
+    decltype(auto) await_transform(Awaitable &&a) {
+      return std::forward<Awaitable>(a);
+    }
   };
 
   template <typename Self> auto operator co_await(this Self &&self) noexcept {
@@ -195,7 +225,9 @@ public:
     return h;
   }
 
-  std::coroutine_handle<> handle() const noexcept { return handle_; }
+  std::coroutine_handle<promise_type> handle() const noexcept {
+    return handle_;
+  }
 
 private:
   std::coroutine_handle<promise_type> handle_;
