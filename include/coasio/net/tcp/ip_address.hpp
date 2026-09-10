@@ -1,6 +1,8 @@
 #ifndef COASIO_NET_IP_ADDRESS_HPP
 #define COASIO_NET_IP_ADDRESS_HPP
 
+#include <expected>
+
 #include <asio/ip/address.hpp>
 
 namespace coasio::net::tcp {

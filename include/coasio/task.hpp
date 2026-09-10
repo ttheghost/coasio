@@ -144,7 +144,10 @@ public:
     void unhandled_exception() { exception_ = std::current_exception(); }
   };
 
-  auto operator co_await() && noexcept {
+  template <typename Self> auto operator co_await(this Self &&self) noexcept {
+    static_assert(std::is_rvalue_reference_v<Self &&>,
+                  "task must be co_awaited as a prvalue/rvalue, did you forget "
+                  "std::move?");
     struct awaiter {
       std::coroutine_handle<promise_type> handle_;
 
@@ -167,7 +170,7 @@ public:
           std::rethrow_exception(p.exception_);
       }
     };
-    return awaiter{std::exchange(handle_, nullptr)};
+    return awaiter{std::exchange(self.handle_, nullptr)};
   }
 
   explicit task(std::coroutine_handle<promise_type> h) : handle_(h) {}
