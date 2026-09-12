@@ -15,6 +15,7 @@ public:
     std::optional<T> result_;
     std::exception_ptr exception_;
     asio::cancellation_slot cancel_slot_;
+    std::shared_ptr<asio::cancellation_signal> cancel_sig_;
     std::coroutine_handle<> continuation_;
     bool detached_ = false;
 
@@ -107,20 +108,31 @@ public:
       handle_.destroy();
   }
 
-  std::coroutine_handle<promise_type> release() noexcept {
+  [[nodiscard]] std::coroutine_handle<promise_type> release() noexcept {
     return std::exchange(handle_, nullptr);
   }
 
-  std::coroutine_handle<promise_type> detach() noexcept {
+  [[nodiscard]] std::coroutine_handle<promise_type> detach() noexcept {
     auto h = release();
     if (h)
       h.promise().detached_ = true;
     return h;
   }
 
-  std::coroutine_handle<promise_type> handle() const noexcept {
+  void set_cancellation_slot(asio::cancellation_slot slot) {
+    handle_.promise().cancel_slot_ = slot;
+  }
+
+  void set_cancellation_signal(
+      const std::shared_ptr<asio::cancellation_signal> &sig) {
+    handle_.promise().cancel_sig_ = sig;
+  }
+
+  [[nodiscard]] std::coroutine_handle<promise_type> handle() const noexcept {
     return handle_;
   }
+
+  explicit operator bool() const { return handle_ && !handle_.done(); }
 
 private:
   std::coroutine_handle<promise_type> handle_;
@@ -131,6 +143,7 @@ public:
   struct promise_type {
     std::exception_ptr exception_;
     asio::cancellation_slot cancel_slot_;
+    std::shared_ptr<asio::cancellation_signal> cancel_sig_;
     std::coroutine_handle<> continuation_;
     bool detached_ = false;
 
@@ -170,6 +183,10 @@ public:
 
     template <typename Awaitable>
     decltype(auto) await_transform(Awaitable &&a) {
+      // Leaves (timers, sockets, etc.)
+      if constexpr (requires { a.set_cancel_slot(cancel_slot_); }) {
+        a.set_cancel_slot(cancel_slot_);
+      }
       return std::forward<Awaitable>(a);
     }
   };
@@ -214,20 +231,31 @@ public:
       handle_.destroy();
   }
 
-  std::coroutine_handle<promise_type> release() noexcept {
+  [[nodiscard]] std::coroutine_handle<promise_type> release() noexcept {
     return std::exchange(handle_, nullptr);
   }
 
-  std::coroutine_handle<promise_type> detach() noexcept {
+  [[nodiscard]] std::coroutine_handle<promise_type> detach() noexcept {
     auto h = release();
     if (h)
       h.promise().detached_ = true;
     return h;
   }
 
-  std::coroutine_handle<promise_type> handle() const noexcept {
+  void set_cancellation_slot(asio::cancellation_slot slot) {
+    handle_.promise().cancel_slot_ = slot;
+  }
+
+  void set_cancellation_signal(
+      const std::shared_ptr<asio::cancellation_signal> &sig) {
+    handle_.promise().cancel_sig_ = sig;
+  }
+
+  [[nodiscard]] std::coroutine_handle<promise_type> handle() const noexcept {
     return handle_;
   }
+
+  explicit operator bool() const { return handle_ && !handle_.done(); }
 
 private:
   std::coroutine_handle<promise_type> handle_;

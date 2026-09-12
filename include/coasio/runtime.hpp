@@ -2,6 +2,7 @@
 #define COASIO_RUNTIME_HPP
 
 #include <asio/io_context.hpp>
+#include <asio/post.hpp>
 #include <atomic>
 #include <condition_variable>
 #include <coroutine>
@@ -16,6 +17,8 @@
 
 namespace coasio {
 class runtime;
+
+template <typename T> class JoinHandle;
 
 class worker {
   runtime *runtime_;
@@ -90,14 +93,22 @@ public:
     return future.get();
   }
 
-  template <typename T> static void spawn(task<T> task) {
+  template <typename T> static JoinHandle<T> spawn(task<T> task) {
     runtime *rt = current();
     if (!rt) {
-      std::cout << "Called outside a coasio runtime\n";
+      std::cerr << "Called outside a coasio runtime\n";
       std::terminate();
     }
-    if (auto handle = task.detach())
-      rt->schedule(handle);
+    if (!task)
+      return JoinHandle<T>{nullptr, nullptr};
+    ;
+
+    auto sig = std::make_shared<asio::cancellation_signal>();
+    task.set_cancellation_slot(sig->slot());
+    task.set_cancellation_signal(sig);
+    auto handle = task.detach();
+    rt->schedule(handle);
+    return JoinHandle<T>{rt, std::move(sig)};
   }
 
   asio::io_context &get_io_context() noexcept { return io_context_; }
@@ -105,7 +116,7 @@ public:
   static asio::io_context &get_current_io_context() noexcept {
     auto *rt = current();
     if (!rt) {
-      std::cout << "Called outside a coasio runtime\n";
+      std::cerr << "Called outside a coasio runtime\n";
       std::terminate();
     }
     return rt->get_io_context();
@@ -138,6 +149,22 @@ public:
 
   friend class worker;
   friend class io_worker;
+};
+
+template <typename T> class JoinHandle {
+public:
+  JoinHandle(runtime *rt, std::shared_ptr<asio::cancellation_signal> sig)
+      : rt_(rt), sig_(std::move(sig)) {}
+
+  void abort(asio::cancellation_type type = asio::cancellation_type::all) {
+    if (!sig_ || !rt_)
+      return;
+    asio::post(rt_->get_io_context(), [sig = sig_, type] { sig->emit(type); });
+  }
+
+private:
+  runtime *rt_ = nullptr;
+  std::shared_ptr<asio::cancellation_signal> sig_;
 };
 }; // namespace coasio
 
