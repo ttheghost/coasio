@@ -3,7 +3,6 @@
 #include <print>
 
 void coasio::worker::run() const {
-  std::print("worker thread id: {}\n", std::this_thread::get_id());
   runtime::context_guard guard(runtime_);
 
   while (!runtime_->stop_requested_) {
@@ -16,7 +15,6 @@ void coasio::worker::run() const {
 }
 
 void coasio::io_worker::run() const {
-  std::print("io_worker thread id: {}\n", std::this_thread::get_id());
   runtime_->io_context_.run();
 }
 
@@ -24,8 +22,6 @@ coasio::runtime::runtime() : work_guard_(asio::make_work_guard(io_context_)) {
   auto num_threads = std::thread::hardware_concurrency();
   if (num_threads == 0)
     num_threads = 1;
-
-  std::print("num_threads: {}\n", num_threads);
 
   worker_threads_.reserve(num_threads);
   for (unsigned int i = 0; i < num_threads; ++i) {
