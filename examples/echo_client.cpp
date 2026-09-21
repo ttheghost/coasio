@@ -1,8 +1,6 @@
-#include <coasio/runtime.hpp>
-#include <coasio/task.hpp>
-
-#include "coasio/net/tcp.hpp"
-#include "coasio/time.hpp"
+#include <coasio.hpp>
+#include <coasio/net/tcp.hpp>
+#include <coasio/time.hpp>
 
 #include <random>
 #include <ranges>
@@ -58,7 +56,7 @@ COASIO_MAIN$() {
   constexpr size_t client_number = 20;
   constexpr size_t message_size = 1024;
   for (size_t i = 0; i < client_number; i++) {
-    coasio::runtime::spawn(client(i, message_size));
+    coasio::spawn(client(i, message_size));
   }
 
   while (true) {

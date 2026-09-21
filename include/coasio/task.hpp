@@ -260,6 +260,11 @@ public:
 private:
   std::coroutine_handle<promise_type> handle_;
 };
+
+template <typename T> struct is_task : std::false_type {};
+template <typename T> struct is_task<task<T>> : std::true_type {};
+template <typename T>
+inline constexpr bool is_task_v = is_task<std::remove_cvref_t<T>>::value;
 } // namespace coasio
 
 #endif // !COASIO_TASK_HPP

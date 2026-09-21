@@ -93,22 +93,30 @@ public:
     return future.get();
   }
 
-  template <typename T> static JoinHandle<T> spawn(task<T> task) {
-    runtime *rt = current();
-    if (!rt) {
-      std::cerr << "Called outside a coasio runtime\n";
-      std::terminate();
-    }
+  template <typename T> JoinHandle<T> spawn_task(task<T> task) {
     if (!task)
       return JoinHandle<T>{nullptr, nullptr};
-    ;
 
     auto sig = std::make_shared<asio::cancellation_signal>();
     task.set_cancellation_slot(sig->slot());
     task.set_cancellation_signal(sig);
     auto handle = task.detach();
-    rt->schedule(handle);
-    return JoinHandle<T>{rt, std::move(sig)};
+    schedule(handle);
+    return JoinHandle<T>{this, std::move(sig)};
+  }
+
+  template <typename Arg> auto spawn(Arg &&arg) {
+    if constexpr (is_task_v<Arg>) {
+      return spawn_task(std::forward<Arg>(arg));
+    } else if constexpr (std::invocable<Arg> &&
+                         is_task_v<std::invoke_result_t<Arg>>) {
+      return spawn_task(std::invoke(std::forward<Arg>(arg)));
+    } else {
+      static_assert(
+          sizeof(Arg) == 0, // false
+          "runtime::spawn(F) requires F to be a coasio::task<T>, "
+          "or a callable (e.g. lambda) with signature `coasio::task<T>()`");
+    }
   }
 
   asio::io_context &get_io_context() noexcept { return io_context_; }

@@ -1,5 +1,4 @@
-#include <coasio/runtime.hpp>
-#include <coasio/task.hpp>
+#include <coasio.hpp>
 
 #include "coasio/net/tcp.hpp"
 #include "coasio/time.hpp"
@@ -161,7 +160,7 @@ COASIO_MAIN$() {
     co_return -1;
   }
 
-  coasio::runtime::spawn(metrics_monitor_task());
+  coasio::spawn(metrics_monitor_task());
 
   for (;;) {
     auto maybeSocket = co_await listener.accept();
@@ -171,7 +170,7 @@ COASIO_MAIN$() {
       co_return 1;
     }
     auto socket = std::move(*maybeSocket);
-    coasio::runtime::spawn(client_handler(std::move(socket)));
+    coasio::spawn(client_handler(std::move(socket)));
   }
 
   co_return 0;

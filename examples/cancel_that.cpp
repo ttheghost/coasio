@@ -1,8 +1,8 @@
-#include "coasio/time.hpp"
 #include <chrono>
-#include <coasio/runtime.hpp>
-#include <coasio/task.hpp>
 #include <iostream>
+
+#include <coasio.hpp>
+#include <coasio/time.hpp>
 
 #define COASIO_MAIN$()                                                         \
   auto __user_main() -> ::coasio::task<int>;                                   \
@@ -27,7 +27,7 @@ coasio::task<int> long_running_work() {
 }
 
 COASIO_MAIN$() {
-  auto handle = coasio::runtime::spawn(long_running_work());
+  auto handle = coasio::spawn(long_running_work());
 
   co_await coasio::time::sleep(std::chrono::seconds(1));
   std::cout << "runner: aborting the work task now\n";
