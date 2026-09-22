@@ -50,24 +50,19 @@ class runtime {
 
   static inline thread_local runtime *current_runtime_ = nullptr;
 
-public:
-  runtime();
+  template <typename T> JoinHandle<T> _spawn(task<T> task) {
+    if (!task)
+      return JoinHandle<T>{nullptr, nullptr};
 
-  ~runtime();
+    auto sig = std::make_shared<asio::cancellation_signal>();
+    task.set_cancellation_slot(sig->slot());
+    task.set_cancellation_signal(sig);
+    auto handle = task.detach();
+    schedule(handle);
+    return JoinHandle<T>{this, std::move(sig)};
+  }
 
-  static runtime *current() noexcept { return current_runtime_; }
-
-  struct context_guard {
-    runtime *prev_;
-
-    explicit context_guard(runtime *rt) noexcept : prev_(current_runtime_) {
-      current_runtime_ = rt;
-    }
-
-    ~context_guard() noexcept { current_runtime_ = prev_; }
-  };
-
-  template <typename T> T block_on(task<T> t) {
+  template <typename T> T _block_on(task<T> t) {
     context_guard guard(this);
 
     using promise_t = std::conditional_t<std::is_void_v<T>, std::promise<void>,
@@ -93,28 +88,47 @@ public:
     return future.get();
   }
 
-  template <typename T> JoinHandle<T> spawn_task(task<T> task) {
-    if (!task)
-      return JoinHandle<T>{nullptr, nullptr};
+public:
+  runtime();
 
-    auto sig = std::make_shared<asio::cancellation_signal>();
-    task.set_cancellation_slot(sig->slot());
-    task.set_cancellation_signal(sig);
-    auto handle = task.detach();
-    schedule(handle);
-    return JoinHandle<T>{this, std::move(sig)};
-  }
+  ~runtime();
+
+  static runtime *current() noexcept { return current_runtime_; }
+
+  struct context_guard {
+    runtime *prev_;
+
+    explicit context_guard(runtime *rt) noexcept : prev_(current_runtime_) {
+      current_runtime_ = rt;
+    }
+
+    ~context_guard() noexcept { current_runtime_ = prev_; }
+  };
 
   template <typename Arg> auto spawn(Arg &&arg) {
     if constexpr (is_task_v<Arg>) {
-      return spawn_task(std::forward<Arg>(arg));
+      return _spawn(std::forward<Arg>(arg));
     } else if constexpr (std::invocable<Arg> &&
                          is_task_v<std::invoke_result_t<Arg>>) {
-      return spawn_task(std::invoke(std::forward<Arg>(arg)));
+      return _spawn(std::invoke(std::forward<Arg>(arg)));
     } else {
       static_assert(
           sizeof(Arg) == 0, // false
           "runtime::spawn(F) requires F to be a coasio::task<T>, "
+          "or a callable (e.g. lambda) with signature `coasio::task<T>()`");
+    }
+  }
+
+  template <typename Arg> auto block_on(Arg &&arg) {
+    if constexpr (is_task_v<Arg>) {
+      return _block_on(std::forward<Arg>(arg));
+    } else if constexpr (std::invocable<Arg> &&
+                         is_task_v<std::invoke_result_t<Arg>>) {
+      return _block_on(std::forward<Arg>(arg)());
+    } else {
+      static_assert(
+          sizeof(Arg) == 0,
+          "runtime::block_on(F) requires F to be a coasio::task<T>, "
           "or a callable (e.g. lambda) with signature `coasio::task<T>()`");
     }
   }
